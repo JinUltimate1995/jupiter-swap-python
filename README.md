@@ -153,3 +153,13 @@ client = JupiterClient(api_key="your-api-key")
 ## License
 
 MIT
+
+---
+
+## Support
+
+If this saved you time, a tip is appreciated — it funds maintenance.
+
+**Tip jar (SOL):** `Evot66rHqu6WyiBF948YipgArHSMeJ5D4GeNJXPTpV6q`
+
+You can also sponsor via the GitHub **Sponsor** button.
