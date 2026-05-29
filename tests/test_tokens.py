@@ -9,7 +9,6 @@ from pytest_httpx import HTTPXMock
 
 from jupiter_swap import TokenClient
 
-
 TOKEN_INFO_RESPONSE = {
     "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     "name": "USD Coin",

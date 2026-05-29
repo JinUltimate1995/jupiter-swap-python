@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -307,7 +307,7 @@ class JupiterClient:
                 f"Ultra swap execution failed: {data.get('error', 'unknown')}",
             )
 
-        return tx_sig
+        return tx_sig if isinstance(tx_sig, str) else ""
 
     # -- Internal ------------------------------------------------------------
 
@@ -331,9 +331,9 @@ class JupiterClient:
         method: str,
         url: str,
         *,
-        params: dict | None = None,
-        json: dict | None = None,
-    ) -> dict:
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Make an HTTP request with rate limiting and 429 retry.
 
@@ -359,7 +359,7 @@ class JupiterClient:
                 last_body = resp.text[:500] if resp.status_code != 200 else ""
 
                 if resp.status_code == 200:
-                    return resp.json()
+                    return cast("dict[str, Any]", resp.json())
 
                 if resp.status_code == 429:
                     retry_after = self._parse_retry_after(resp)

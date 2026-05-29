@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -103,7 +103,7 @@ class TokenClient:
             httpx.HTTPError: On network failure.
         """
         cached = self._get_cached(f"token:{mint}")
-        if cached is not None:
+        if isinstance(cached, TokenInfo):
             return cached
 
         if self._http is None:
@@ -161,8 +161,8 @@ class TokenClient:
             List of TokenInfo for all strictly verified tokens.
         """
         cached = self._get_cached("strict_list")
-        if cached is not None:
-            return cached
+        if isinstance(cached, list):
+            return cast("list[TokenInfo]", cached)
 
         if self._http is None:
             raise RuntimeError("TokenClient not connected — call connect() first")

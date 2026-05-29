@@ -5,12 +5,10 @@ from __future__ import annotations
 import re
 
 import pytest
-import httpx
 from pytest_httpx import HTTPXMock
 
 from jupiter_swap import JupiterClient
 from jupiter_swap.client import JupiterError
-
 
 # -- Fixtures ----------------------------------------------------------------
 

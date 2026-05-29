@@ -5,6 +5,7 @@ Data models for Jupiter API responses.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -16,11 +17,11 @@ class QuoteResponse:
     in_amount: str
     out_amount: str
     price_impact_pct: str = "0"
-    route_plan: list[dict] = field(default_factory=list)
+    route_plan: list[dict[str, Any]] = field(default_factory=list)
     other_amount_threshold: str = "0"
     swap_mode: str = "ExactIn"
     slippage_bps: int = 50
-    raw: dict = field(default_factory=dict, repr=False)
+    raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def in_amount_float(self) -> float:
@@ -46,7 +47,7 @@ class SwapResponse:
     swap_transaction: str
     last_valid_block_height: int = 0
     priority_fee_lamports: int = 0
-    raw: dict = field(default_factory=dict, repr=False)
+    raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass(slots=True)
@@ -62,7 +63,7 @@ class UltraOrder:
     swap_type: str = "swap"
     priority_fee_lamports: int = 0
     dynamic_slippage_bps: int = 0
-    raw: dict = field(default_factory=dict, repr=False)
+    raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass(slots=True)

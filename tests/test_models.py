@@ -14,7 +14,9 @@ def test_quote_response_defaults() -> None:
 
 
 def test_quote_amount_helpers() -> None:
-    q = QuoteResponse(input_mint="A", output_mint="B", in_amount="1000000000", out_amount="150000000")
+    q = QuoteResponse(
+        input_mint="A", output_mint="B", in_amount="1000000000", out_amount="150000000"
+    )
     assert q.in_amount_float == 1_000_000_000.0
     assert q.out_amount_float == 150_000_000.0
 

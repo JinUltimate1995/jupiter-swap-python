@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 — 2026-05-29
+
+- mypy strict + ruff clean; PyPI release via GitHub Actions Trusted Publishing on a version tag.
+
 ## 0.1.0
 
 - Initial release
