@@ -17,6 +17,8 @@ Jupiter's own Python SDK was abandoned (returns 404). This library fills the gap
 pip install jupiter-swap-python
 ```
 
+**No API key required** — by default the client uses Jupiter's keyless `lite-api.jup.ag` tier. Pass `api_key="..."` to switch to the keyed `api.jup.ag` endpoint with higher rate limits.
+
 ### Get a quote
 
 ```python
@@ -105,9 +107,9 @@ async with TokenClient() as tokens:
 | Method | Description |
 |--------|-------------|
 | `get_token_info()` | Get token metadata and verification status |
-| `is_banned()` | Check if a token is on the banned list |
+| `is_banned()` | Check banned status (Jupiter v2 removed the public list; returns `False`) |
 | `is_verified()` | Check if a token is verified |
-| `get_strict_list()` | Get all strictly verified tokens |
+| `get_strict_list()` | Get the verified token list (v2 merged `strict` into `verified`) |
 | `refresh_banned_list()` | Manually refresh the banned list |
 
 ### Models
@@ -126,7 +128,7 @@ async with TokenClient() as tokens:
 | Jupiter's Python SDK is deleted | This exists |
 | Raw `httpx.post()` calls everywhere | Typed client with proper models |
 | No 429 handling | Built-in retry with exponential backoff |
-| Token safety is an afterthought | `TokenClient` with banned/verified checks |
+| Token safety is an afterthought | `TokenClient` with verification and metadata checks |
 | Sync-only clients | Fully async with `httpx` |
 
 ---
@@ -135,7 +137,7 @@ async with TokenClient() as tokens:
 
 A Jupiter API key is optional but recommended for production use (higher rate limits).
 
-Get one at [station.jup.ag](https://station.jup.ag/).
+Get one at [developers.jup.ag](https://developers.jup.ag/).
 
 ```python
 client = JupiterClient(api_key="your-api-key")
@@ -147,6 +149,8 @@ client = JupiterClient(api_key="your-api-key")
 
 - [**solana-rpc-resilient**](https://github.com/JinUltimate1995/solana-rpc-resilient) — Solana RPC client with automatic failover, rate limiting, and circuit breaker
 - [**dexscreener-python**](https://github.com/JinUltimate1995/dexscreener-python) — Async DexScreener API client for token/pair data across 80+ chains
+- [**pumpfun-python**](https://github.com/JinUltimate1995/pumpfun-python) — Buy/sell on PumpFun bonding curves + PumpSwap AMM, no Jupiter needed
+- [**pumpswap-python**](https://github.com/JinUltimate1995/pumpswap-python) — Direct Pump AMM (pAMMBay) swap instruction builder
 
 ---
 

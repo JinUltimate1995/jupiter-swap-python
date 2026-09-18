@@ -1,4 +1,4 @@
-"""Tests for TokenClient."""
+"""Tests for TokenClient (Jupiter Token API v2)."""
 
 from __future__ import annotations
 
@@ -9,46 +9,39 @@ from pytest_httpx import HTTPXMock
 
 from jupiter_swap import TokenClient
 
-TOKEN_INFO_RESPONSE = {
-    "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+TOKEN_ITEM = {
+    "id": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     "name": "USD Coin",
     "symbol": "USDC",
     "decimals": 6,
-    "logoURI": "https://example.com/usdc.png",
+    "icon": "https://example.com/usdc.png",
     "tags": ["verified", "strict", "community"],
-    "daily_volume": 1234567.89,
-    "freeze_authority": None,
-    "mint_authority": None,
+    "isVerified": True,
+    "mintAuthority": None,
+    "freezeAuthority": None,
+    "stats24h": {"buyVolume": 600000.0, "sellVolume": 600000.0},
 }
 
-BANNED_LIST_RESPONSE = [
-    {"address": "ScamToken111111111111111111111111111111111"},
-    {"address": "RugPull2222222222222222222222222222222222222"},
-]
+BANNED_UNAVAILABLE = {"status": 400, "message": "Invalid tag provided."}
 
-STRICT_LIST_RESPONSE = [
+VERIFIED_LIST_RESPONSE = [
     {
-        "address": "So11111111111111111111111111111111111111112",
+        "id": "So11111111111111111111111111111111111111112",
         "name": "Wrapped SOL",
         "symbol": "SOL",
         "decimals": 9,
-        "tags": ["strict"],
+        "tags": ["verified", "strict"],
+        "isVerified": True,
     },
-    {
-        "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        "name": "USD Coin",
-        "symbol": "USDC",
-        "decimals": 6,
-        "tags": ["strict", "verified"],
-    },
+    TOKEN_ITEM,
 ]
 
 
 @pytest.mark.asyncio
 async def test_get_token_info(httpx_mock: HTTPXMock) -> None:
-    # startup calls /banned first
-    httpx_mock.add_response(url=re.compile(r".*/banned$"), json=[])
-    httpx_mock.add_response(url=re.compile(r".*/tokens/v1/EPjF.*"), json=TOKEN_INFO_RESPONSE)
+    # startup attempts the (removed) banned list first
+    httpx_mock.add_response(url=re.compile(r".*/tag.*"), status_code=400, json=BANNED_UNAVAILABLE)
+    httpx_mock.add_response(url=re.compile(r".*/search.*"), json=[TOKEN_ITEM])
 
     async with TokenClient() as client:
         info = await client.get_token_info("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
@@ -57,12 +50,14 @@ async def test_get_token_info(httpx_mock: HTTPXMock) -> None:
     assert info.decimals == 6
     assert info.is_verified is True
     assert info.is_banned is False
+    assert info.logo_uri == "https://example.com/usdc.png"
+    assert info.daily_volume == 1200000.0
 
 
 @pytest.mark.asyncio
 async def test_get_token_info_unknown_token(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(url=re.compile(r".*/banned$"), json=[])
-    httpx_mock.add_response(url=re.compile(r".*/tokens/v1/Unknown.*"), status_code=404)
+    httpx_mock.add_response(url=re.compile(r".*/tag.*"), status_code=400, json=BANNED_UNAVAILABLE)
+    httpx_mock.add_response(url=re.compile(r".*/search.*"), json=[])
 
     async with TokenClient() as client:
         info = await client.get_token_info("UnknownMintAddress")
@@ -72,18 +67,49 @@ async def test_get_token_info_unknown_token(httpx_mock: HTTPXMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_is_banned_from_preloaded_list(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(url=re.compile(r".*/banned$"), json=BANNED_LIST_RESPONSE)
+async def test_get_token_info_no_exact_match(httpx_mock: HTTPXMock) -> None:
+    """Search results without an exact id match yield an unknown TokenInfo."""
+    httpx_mock.add_response(url=re.compile(r".*/tag.*"), status_code=400, json=BANNED_UNAVAILABLE)
+    httpx_mock.add_response(url=re.compile(r".*/search.*"), json=[TOKEN_ITEM])
+
+    async with TokenClient() as client:
+        info = await client.get_token_info("SomeOtherMint111111111111111111111111111")
+
+    assert info.is_verified is False
+    assert info.address == "SomeOtherMint111111111111111111111111111"
+
+
+@pytest.mark.asyncio
+async def test_banned_list_unavailable_graceful(httpx_mock: HTTPXMock) -> None:
+    """v2 removed the public banned list — calls degrade to False without errors."""
+    httpx_mock.add_response(
+        url=re.compile(r".*/tag.*"),
+        status_code=400,
+        json=BANNED_UNAVAILABLE,
+        is_reusable=True,
+    )
+
+    async with TokenClient() as client:
+        assert await client.is_banned("ScamToken111111111111111111111111111111111") is False
+        assert await client.refresh_banned_list() == 0
+
+
+@pytest.mark.asyncio
+async def test_banned_list_loads_if_available(httpx_mock: HTTPXMock) -> None:
+    """Forward-compat: a banned list is still loaded if an endpoint serves one."""
+    httpx_mock.add_response(
+        url=re.compile(r".*/tag.*"),
+        json=[{"id": "ScamToken111111111111111111111111111111111"}],
+    )
 
     async with TokenClient() as client:
         assert await client.is_banned("ScamToken111111111111111111111111111111111") is True
-        assert await client.is_banned("SafeToken333333333333333333333333333333333") is False
 
 
 @pytest.mark.asyncio
 async def test_is_verified(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(url=re.compile(r".*/banned$"), json=[])
-    httpx_mock.add_response(url=re.compile(r".*/tokens/v1/EPjF.*"), json=TOKEN_INFO_RESPONSE)
+    httpx_mock.add_response(url=re.compile(r".*/tag.*"), status_code=400, json=BANNED_UNAVAILABLE)
+    httpx_mock.add_response(url=re.compile(r".*/search.*"), json=[TOKEN_ITEM])
 
     async with TokenClient() as client:
         assert await client.is_verified("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v") is True
@@ -91,8 +117,8 @@ async def test_is_verified(httpx_mock: HTTPXMock) -> None:
 
 @pytest.mark.asyncio
 async def test_get_strict_list(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(url=re.compile(r".*/banned$"), json=[])
-    httpx_mock.add_response(url=re.compile(r".*/strict$"), json=STRICT_LIST_RESPONSE)
+    httpx_mock.add_response(url=re.compile(r".*/tag.*"), status_code=400, json=BANNED_UNAVAILABLE)
+    httpx_mock.add_response(url=re.compile(r".*/tag.*"), json=VERIFIED_LIST_RESPONSE)
 
     async with TokenClient() as client:
         tokens = await client.get_strict_list()
@@ -105,29 +131,16 @@ async def test_get_strict_list(httpx_mock: HTTPXMock) -> None:
 
 @pytest.mark.asyncio
 async def test_token_info_cached(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(url=re.compile(r".*/banned$"), json=[])
-    httpx_mock.add_response(url=re.compile(r".*/tokens/v1/EPjF.*"), json=TOKEN_INFO_RESPONSE)
+    httpx_mock.add_response(url=re.compile(r".*/tag.*"), status_code=400, json=BANNED_UNAVAILABLE)
+    httpx_mock.add_response(url=re.compile(r".*/search.*"), json=[TOKEN_ITEM])
 
     async with TokenClient() as client:
         info1 = await client.get_token_info("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
         info2 = await client.get_token_info("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
 
-    # Should only have made 1 HTTP call for the token (plus 1 for banned list)
     assert info1.symbol == info2.symbol == "USDC"
-    # 1 banned + 1 token info = 2 total requests (second is cached)
+    # 1 banned-list attempt + 1 token search = 2 requests (second token read is cached)
     assert len(httpx_mock.get_requests()) == 2
-
-
-@pytest.mark.asyncio
-async def test_refresh_banned_list(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(url=re.compile(r".*/banned$"), json=[])
-    httpx_mock.add_response(url=re.compile(r".*/banned$"), json=BANNED_LIST_RESPONSE)
-
-    async with TokenClient() as client:
-        assert await client.is_banned("ScamToken111111111111111111111111111111111") is False
-        count = await client.refresh_banned_list()
-        assert count == 2
-        assert await client.is_banned("ScamToken111111111111111111111111111111111") is True
 
 
 @pytest.mark.asyncio

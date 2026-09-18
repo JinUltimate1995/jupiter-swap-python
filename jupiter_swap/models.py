@@ -10,7 +10,7 @@ from typing import Any
 
 @dataclass(slots=True)
 class QuoteResponse:
-    """Parsed quote from Jupiter V6 API."""
+    """Parsed quote from the Jupiter Swap API."""
 
     input_mint: str
     output_mint: str
@@ -42,7 +42,7 @@ class QuoteResponse:
 
 @dataclass(slots=True)
 class SwapResponse:
-    """Parsed swap transaction from Jupiter V6 API."""
+    """Parsed swap transaction from the Jupiter Swap API."""
 
     swap_transaction: str
     last_valid_block_height: int = 0

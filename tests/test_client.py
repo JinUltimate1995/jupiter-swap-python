@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
@@ -37,9 +38,9 @@ ULTRA_ORDER_RESPONSE = {
     "inAmount": "1000000000",
     "outAmount": "150000000",
     "transaction": "base64ultraTx==",
-    "type": "swap",
+    "swapType": "swap",
     "prioritizationFeeLamports": 400000,
-    "dynamicSlippageReport": {"slippageBps": 42},
+    "slippageBps": 42,
 }
 
 ULTRA_EXECUTE_RESPONSE = {
@@ -149,17 +150,54 @@ async def test_swap_includes_dynamic_slippage(httpx_mock: HTTPXMock) -> None:
         await jup.get_swap_transaction(quote, "Wallet")
 
     request = httpx_mock.get_requests()[-1]
-    import json
     body = json.loads(request.content)
     assert body["dynamicSlippage"] is True
     assert body["wrapAndUnwrapSol"] is True
+
+
+# -- Base URLs ---------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_default_swap_url_keyless(httpx_mock: HTTPXMock) -> None:
+    """Without an API key the keyless lite-api endpoint is used."""
+    httpx_mock.add_response(url=re.compile(r".*/quote.*"), json=QUOTE_RESPONSE)
+
+    async with JupiterClient(requests_per_second=0) as jup:
+        await jup.get_quote("A", "B", 100)
+
+    url = str(httpx_mock.get_requests()[0].url)
+    assert url.startswith("https://lite-api.jup.ag/swap/v1/")
+
+
+@pytest.mark.asyncio
+async def test_default_swap_url_keyed(httpx_mock: HTTPXMock) -> None:
+    """With an API key the keyed endpoint is used by default."""
+    httpx_mock.add_response(url=re.compile(r".*/quote.*"), json=QUOTE_RESPONSE)
+
+    async with JupiterClient(api_key="test-key", requests_per_second=0) as jup:
+        await jup.get_quote("A", "B", 100)
+
+    url = str(httpx_mock.get_requests()[0].url)
+    assert url.startswith("https://api.jup.ag/swap/v1/")
+
+
+@pytest.mark.asyncio
+async def test_v6_url_deprecated_alias(httpx_mock: HTTPXMock) -> None:
+    """The legacy v6_url argument still overrides the default base URL."""
+    httpx_mock.add_response(url=re.compile(r".*/quote.*"), json=QUOTE_RESPONSE)
+
+    async with JupiterClient(v6_url="https://old.example.test/v6", requests_per_second=0) as jup:
+        await jup.get_quote("A", "B", 100)
+
+    url = str(httpx_mock.get_requests()[0].url)
+    assert url.startswith("https://old.example.test/v6/")
 
 
 # -- Ultra API ---------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_ultra_order_success(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(url=re.compile(r".*/order$"), json=ULTRA_ORDER_RESPONSE)
+    httpx_mock.add_response(url=re.compile(r".*/order.*"), json=ULTRA_ORDER_RESPONSE)
 
     async with JupiterClient(requests_per_second=0) as jup:
         order = await jup.ultra_order(
@@ -174,6 +212,40 @@ async def test_ultra_order_success(httpx_mock: HTTPXMock) -> None:
     assert order.swap_transaction == "base64ultraTx=="
     assert order.swap_type == "swap"
     assert order.dynamic_slippage_bps == 42
+
+
+@pytest.mark.asyncio
+async def test_ultra_order_is_get_with_params(httpx_mock: HTTPXMock) -> None:
+    """Ultra orders are fetched with GET + query params (POST body is 404)."""
+    httpx_mock.add_response(url=re.compile(r".*/order.*"), json=ULTRA_ORDER_RESPONSE)
+
+    async with JupiterClient(requests_per_second=0) as jup:
+        await jup.ultra_order("A", "B", 100, taker="WalletPubkey", slippage_bps=75)
+
+    request = httpx_mock.get_requests()[-1]
+    assert request.method == "GET"
+    url = str(request.url)
+    assert "taker=WalletPubkey" in url
+    assert "slippageBps=75" in url
+
+
+@pytest.mark.asyncio
+async def test_ultra_order_error_surfaced(httpx_mock: HTTPXMock) -> None:
+    """HTTP 200 with an `error` field must raise instead of returning an empty tx."""
+    httpx_mock.add_response(
+        url=re.compile(r".*/order.*"),
+        json={
+            "error": "Insufficient funds",
+            "errorCode": 1,
+            "errorMessage": "Insufficient funds",
+            "requestId": "req-err",
+            "transaction": "",
+        },
+    )
+
+    async with JupiterClient(requests_per_second=0) as jup:
+        with pytest.raises(JupiterError, match="Insufficient funds"):
+            await jup.ultra_order("A", "B", 100, taker="WalletPubkey")
 
 
 @pytest.mark.asyncio

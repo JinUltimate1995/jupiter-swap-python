@@ -1,15 +1,21 @@
 """
-Jupiter DEX aggregator client — V6 quote/swap and Ultra API.
+Jupiter DEX aggregator client — Swap API quote/swap and Ultra API.
 
 Supports:
 - Quote: get the best swap route and price
 - Swap: build a transaction from a quote
 - Ultra: combined quote + swap with MEV protection
+
+API endpoints (2026 surface):
+- Swap API (keyless): ``https://lite-api.jup.ag/swap/v1`` (formerly "V6" at quote-api.jup.ag)
+- Swap API (keyed):   ``https://api.jup.ag/swap/v1``
+- Ultra API:          ``https://api.jup.ag/ultra/v1``
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import Any, cast
@@ -21,7 +27,8 @@ from .models import QuoteResponse, SwapResponse, UltraOrder
 logger = logging.getLogger(__name__)
 
 # Jupiter public API base URLs
-_DEFAULT_V6_URL = "https://quote-api.jup.ag/v6"
+_DEFAULT_SWAP_URL = "https://lite-api.jup.ag/swap/v1"
+_KEYED_SWAP_URL = "https://api.jup.ag/swap/v1"
 _DEFAULT_ULTRA_URL = "https://api.jup.ag/ultra/v1"
 
 
@@ -48,7 +55,7 @@ class JupiterClient:
     """
 
     __slots__ = (
-        "_v6_url",
+        "_swap_url",
         "_ultra_url",
         "_api_key",
         "_http",
@@ -61,7 +68,8 @@ class JupiterClient:
         self,
         *,
         api_key: str = "",
-        v6_url: str = _DEFAULT_V6_URL,
+        swap_url: str | None = None,
+        v6_url: str | None = None,
         ultra_url: str = _DEFAULT_ULTRA_URL,
         max_retries: int = 3,
         requests_per_second: float = 10.0,
@@ -70,13 +78,22 @@ class JupiterClient:
         Initialise the Jupiter client.
 
         Args:
-            api_key: Optional Jupiter API key for higher rate limits.
-            v6_url: Base URL for the V6 quote/swap API.
+            api_key: Optional Jupiter API key for higher rate limits. When set,
+                the keyed endpoint (``api.jup.ag``) is used by default.
+            swap_url: Base URL for the Swap API. Defaults to
+                ``lite-api.jup.ag/swap/v1`` (keyless), or ``api.jup.ag/swap/v1``
+                when ``api_key`` is supplied.
+            v6_url: Deprecated alias for ``swap_url`` (Jupiter's legacy "V6"
+                base URL). Prefer ``swap_url``.
             ultra_url: Base URL for the Ultra swap API.
             max_retries: Max retry attempts on 429 responses.
             requests_per_second: Simple rate limiter — minimum interval between requests.
         """
-        self._v6_url = v6_url.rstrip("/")
+        if swap_url is None:
+            swap_url = v6_url
+        if swap_url is None:
+            swap_url = _KEYED_SWAP_URL if api_key else _DEFAULT_SWAP_URL
+        self._swap_url = swap_url.rstrip("/")
         self._ultra_url = ultra_url.rstrip("/")
         self._api_key = api_key
         self._http: httpx.AsyncClient | None = None
@@ -104,7 +121,7 @@ class JupiterClient:
             await self._http.aclose()
             self._http = None
 
-    # -- V6 Quote/Swap -------------------------------------------------------
+    # -- Swap API (quote / swap) ---------------------------------------------
 
     async def get_quote(
         self,
@@ -147,7 +164,7 @@ class JupiterClient:
         if max_accounts != 64:
             params["maxAccounts"] = str(max_accounts)
 
-        data = await self._request("GET", f"{self._v6_url}/quote", params=params)
+        data = await self._request("GET", f"{self._swap_url}/quote", params=params)
 
         return QuoteResponse(
             input_mint=data.get("inputMint", input_mint),
@@ -205,7 +222,7 @@ class JupiterClient:
             },
         }
 
-        data = await self._request("POST", f"{self._v6_url}/swap", json=body)
+        data = await self._request("POST", f"{self._swap_url}/swap", json=body)
 
         return SwapResponse(
             swap_transaction=data.get("swapTransaction", ""),
@@ -244,9 +261,10 @@ class JupiterClient:
             UltraOrder with a transaction ready to sign and execute.
 
         Raises:
-            JupiterError: If the order request fails.
+            JupiterError: If the order request fails, or the order reports a
+                business error (e.g. "Insufficient funds", "No route found").
         """
-        body: dict[str, Any] = {
+        params: dict[str, str | int] = {
             "inputMint": input_mint,
             "outputMint": output_mint,
             "amount": str(amount),
@@ -254,7 +272,22 @@ class JupiterClient:
             "slippageBps": slippage_bps,
         }
 
-        data = await self._request("POST", f"{self._ultra_url}/order", json=body)
+        data = await self._request("GET", f"{self._ultra_url}/order", params=params)
+
+        # Ultra answers HTTP 200 with an `error` field for business errors.
+        # Surface those instead of silently returning an empty transaction.
+        if data.get("error"):
+            message = data.get("errorMessage") or data.get("error")
+            raise JupiterError(f"Ultra order rejected: {message}", body=str(data)[:500])
+
+        dynamic_slippage_bps = slippage_bps
+        slip_raw = data.get("slippageBps")
+        if slip_raw is None:
+            report = data.get("dynamicSlippageReport") or {}
+            slip_raw = report.get("slippageBps") if isinstance(report, dict) else None
+        if isinstance(slip_raw, (int, float, str)):
+            with contextlib.suppress(TypeError, ValueError):
+                dynamic_slippage_bps = int(float(slip_raw))
 
         return UltraOrder(
             request_id=data.get("requestId", ""),
@@ -263,11 +296,9 @@ class JupiterClient:
             in_amount=data.get("inAmount", str(amount)),
             out_amount=data.get("outAmount", "0"),
             swap_transaction=data.get("transaction", ""),
-            swap_type=data.get("type", "swap"),
+            swap_type=data.get("swapType", data.get("type", "swap")),
             priority_fee_lamports=data.get("prioritizationFeeLamports", 0),
-            dynamic_slippage_bps=data.get("dynamicSlippageReport", {}).get(
-                "slippageBps", slippage_bps,
-            ),
+            dynamic_slippage_bps=dynamic_slippage_bps,
             raw=data,
         )
 

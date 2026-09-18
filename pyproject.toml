@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jupiter-swap-python"
-version = "0.1.1"
-description = "Async Python client for the Jupiter DEX aggregator on Solana — V6 quote/swap and Ultra API."
+version = "0.2.0"
+description = "Async Python client for the Jupiter DEX aggregator on Solana — Swap API (quote/swap) and Ultra API."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

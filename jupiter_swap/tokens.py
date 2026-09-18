@@ -1,5 +1,11 @@
 """
-Jupiter Token API client — token verification, metadata, and banned detection.
+Jupiter Token API client — token metadata, verification, and quality signals.
+
+Jupiter's Token API v2 (keyless tier on ``lite-api.jup.ag``):
+
+- ``GET /tokens/v2/search?query=<mint or symbol>`` — token metadata
+- ``GET /tokens/v2/tag?query=verified`` — the verified token list
+- ``GET /tokens/v2/recent/{interval}`` — recently created tokens
 """
 
 from __future__ import annotations
@@ -14,26 +20,43 @@ from .models import TokenInfo
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TOKEN_URL = "https://tokens.jup.ag"
+_DEFAULT_TOKEN_URL = "https://lite-api.jup.ag/tokens/v2"
 
 # Cache TTLs
 _TOKEN_INFO_TTL: float = 300.0
-_BANNED_LIST_TTL: float = 600.0
+_LIST_TTL: float = 600.0
+
+
+def _daily_volume(item: dict[str, Any]) -> float | None:
+    """Sum the 24h buy/sell volume stats when present."""
+    stats = item.get("stats24h") or {}
+    buy = stats.get("buyVolume")
+    sell = stats.get("sellVolume")
+    if buy is None and sell is None:
+        return None
+    try:
+        return float(buy or 0.0) + float(sell or 0.0)
+    except (TypeError, ValueError):
+        return None
 
 
 class TokenClient:
     """
     Async client for the Jupiter Token API.
 
-    Provides token metadata, verification status, and banned token detection.
+    Provides token metadata, verification status, and best-effort banned
+    detection.
+
+    .. note::
+        Jupiter removed the public banned-token list in Token API v2.
+        ``is_banned()`` therefore returns ``False`` unless a custom set has
+        been loaded; the method is kept for backwards compatibility.
 
     Usage::
 
         async with TokenClient() as tokens:
             info = await tokens.get_token_info("EPjFWdd5...")
             print(info.symbol, info.is_verified)
-
-            is_scam = await tokens.is_banned("ScamMint...")
     """
 
     __slots__ = (
@@ -71,7 +94,7 @@ class TokenClient:
         await self.close()
 
     async def connect(self) -> None:
-        """Open HTTP client and preload the banned token list."""
+        """Open the HTTP client and attempt the (optional) banned list preload."""
         headers: dict[str, str] = {}
         if self._api_key:
             headers["x-api-key"] = self._api_key
@@ -93,6 +116,10 @@ class TokenClient:
         """
         Get token metadata and verification status.
 
+        Uses ``/tokens/v2/search`` and returns the entry whose ``id`` matches
+        ``mint`` exactly. Unknown mints return a ``TokenInfo`` with
+        ``is_verified=False`` rather than raising.
+
         Args:
             mint: Token mint address.
 
@@ -100,7 +127,7 @@ class TokenClient:
             TokenInfo with name, symbol, decimals, verification flags.
 
         Raises:
-            httpx.HTTPError: On network failure.
+            httpx.HTTPStatusError: On an unexpected HTTP error.
         """
         cached = self._get_cached(f"token:{mint}")
         if isinstance(cached, TokenInfo):
@@ -109,7 +136,7 @@ class TokenClient:
         if self._http is None:
             raise RuntimeError("TokenClient not connected — call connect() first")
 
-        resp = await self._http.get(f"{self._base_url}/tokens/v1/{mint}")
+        resp = await self._http.get(f"{self._base_url}/search", params={"query": mint})
 
         if resp.status_code == 404:
             token = TokenInfo(
@@ -123,25 +150,33 @@ class TokenClient:
         resp.raise_for_status()
 
         data = resp.json()
-        tags = data.get("tags", [])
-        token = TokenInfo(
-            address=data.get("address", mint),
-            name=data.get("name", ""),
-            symbol=data.get("symbol", ""),
-            decimals=data.get("decimals", 0),
-            logo_uri=data.get("logoURI", ""),
-            tags=tags,
-            daily_volume=data.get("daily_volume"),
-            freeze_authority=data.get("freeze_authority"),
-            mint_authority=data.get("mint_authority"),
-            is_verified="verified" in tags or "strict" in tags or "community" in tags,
-            is_banned=mint in self._banned_mints,
-        )
+        item: dict[str, Any] | None = None
+        if isinstance(data, list):
+            for entry in data:
+                if isinstance(entry, dict) and entry.get("id") == mint:
+                    item = entry
+                    break
+
+        if item is None:
+            token = TokenInfo(
+                address=mint,
+                is_verified=False,
+                is_banned=mint in self._banned_mints,
+            )
+        else:
+            token = self._parse_token(item)
+
         self._set_cached(f"token:{mint}", token)
         return token
 
     async def is_banned(self, mint: str) -> bool:
-        """Check if a token is on Jupiter's banned list (known scams)."""
+        """
+        Check if a token is on the banned list.
+
+        Jupiter Token API v2 no longer exposes a public banned list, so this
+        returns ``False`` unless a custom list was loaded. Kept for backwards
+        compatibility.
+        """
         if mint in self._banned_mints:
             return True
         if not self._banned_loaded:
@@ -149,74 +184,102 @@ class TokenClient:
         return mint in self._banned_mints
 
     async def is_verified(self, mint: str) -> bool:
-        """Check if a token is on the verified list."""
+        """Check if a token is verified."""
         info = await self.get_token_info(mint)
         return info.is_verified
 
     async def get_strict_list(self) -> list[TokenInfo]:
         """
-        Get the strictly verified token list (vetted tokens only).
+        Get the verified token list.
+
+        Jupiter removed the dedicated ``/tokens/v1/strict`` endpoint in Token
+        API v2; this now returns the ``verified`` tag list (a superset — its
+        strictly vetted entries still carry a ``strict`` tag in
+        ``TokenInfo.tags``).
 
         Returns:
-            List of TokenInfo for all strictly verified tokens.
+            List of TokenInfo for all verified tokens.
         """
-        cached = self._get_cached("strict_list")
+        cached = self._get_cached("verified_list")
         if isinstance(cached, list):
             return cast("list[TokenInfo]", cached)
 
         if self._http is None:
             raise RuntimeError("TokenClient not connected — call connect() first")
 
-        resp = await self._http.get(f"{self._base_url}/tokens/v1/strict")
+        resp = await self._http.get(f"{self._base_url}/tag", params={"query": "verified"})
         resp.raise_for_status()
 
-        tokens = []
-        for item in resp.json():
-            if isinstance(item, dict):
-                tags = item.get("tags", [])
-                tokens.append(TokenInfo(
-                    address=item.get("address", ""),
-                    name=item.get("name", ""),
-                    symbol=item.get("symbol", ""),
-                    decimals=item.get("decimals", 0),
-                    logo_uri=item.get("logoURI", ""),
-                    tags=tags,
-                    daily_volume=item.get("daily_volume"),
-                    freeze_authority=item.get("freeze_authority"),
-                    mint_authority=item.get("mint_authority"),
-                    is_verified=True,
-                    is_banned=False,
-                ))
+        tokens: list[TokenInfo] = []
+        data = resp.json()
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    tokens.append(self._parse_token(item))
 
-        self._set_cached("strict_list", tokens, ttl=_BANNED_LIST_TTL)
+        self._set_cached("verified_list", tokens, ttl=_LIST_TTL)
         return tokens
 
     async def refresh_banned_list(self) -> int:
         """
-        Manually refresh the banned token list.
+        Manually refresh the banned token list (best-effort).
+
+        Jupiter Token API v2 has no public banned list; the refresh attempt
+        degrades gracefully and returns the number of loaded mints (0 when
+        the endpoint is unavailable).
 
         Returns:
             Number of banned tokens loaded.
         """
-        await self._refresh_banned_list()
+        await self._refresh_banned_list(force=True)
         return len(self._banned_mints)
 
     # -- Internal helpers ----------------------------------------------------
 
-    async def _refresh_banned_list(self) -> None:
+    def _parse_token(self, item: dict[str, Any]) -> TokenInfo:
+        """Map a Token API v2 item to TokenInfo."""
+        tags = item.get("tags") or []
+        address = item.get("id", "")
+        return TokenInfo(
+            address=address,
+            name=item.get("name", ""),
+            symbol=item.get("symbol", ""),
+            decimals=item.get("decimals", 0),
+            logo_uri=item.get("icon", ""),
+            tags=tags,
+            daily_volume=_daily_volume(item),
+            freeze_authority=item.get("freezeAuthority"),
+            mint_authority=item.get("mintAuthority"),
+            is_verified=bool(item.get("isVerified")) or "verified" in tags or "strict" in tags,
+            is_banned=address in self._banned_mints,
+        )
+
+    async def _refresh_banned_list(self, *, force: bool = False) -> None:
         if self._http is None:
             return
+        if self._banned_loaded and not force:
+            return
         try:
-            resp = await self._http.get(f"{self._base_url}/tokens/v1/banned")
+            resp = await self._http.get(f"{self._base_url}/tag", params={"query": "banned"})
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, list):
-                    self._banned_mints = {
-                        item.get("address", item) if isinstance(item, dict) else str(item)
-                        for item in data
-                    }
-                    self._banned_loaded = True
+                    mints: set[str] = set()
+                    for item in data:
+                        if isinstance(item, dict):
+                            mint = item.get("id") or item.get("address")
+                        else:
+                            mint = item
+                        if mint:
+                            mints.add(str(mint))
+                    self._banned_mints = mints
                     logger.debug("Loaded %d banned tokens", len(self._banned_mints))
+            else:
+                logger.debug(
+                    "Jupiter Token API v2 has no banned list (HTTP %s); is_banned() returns False",
+                    resp.status_code,
+                )
+            self._banned_loaded = True
         except Exception as exc:
             logger.warning("Failed to load banned token list: %s", exc)
 
